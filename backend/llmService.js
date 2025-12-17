@@ -1,52 +1,110 @@
 require("dotenv").config();
-const { GoogleGenAI } = require("@google/genai");
+const { Ollama } = require("ollama");
+const faqService = require("./faqService");
 
 class LLMService {
   constructor() {
-    this.apiKey = process.env.GEMINI_API_KEY;
+    console.log("[LLMService] Using Ollama");
 
-    console.log("[LLMService] Using Gemini Responses API");
-    console.log("[LLMService] Key present?", !!this.apiKey);
-
-    this.client = new GoogleGenAI({
-      apiKey: this.apiKey
+    this.client = new Ollama({
+      host: process.env.OLLAMA_HOST || 'http://localhost:11434'
     });
+
+    this.model = process.env.OLLAMA_MODEL || 'llama2';
+    console.log("[LLMService] Model:", this.model);
   }
 
   async generateResponse(message, conversationHistory = []) {
     try {
-      // Build context-aware prompt
-      let contextualPrompt = message;
+      // Step 1: Check FAQs first
+      const faqMatch = faqService.findBestMatch(message);
 
-      if (conversationHistory.length > 0) {
-        // Format conversation history for context
-        const historyContext = conversationHistory
-          .map(msg => `${msg.role}: ${msg.content}`)
-          .join('\n');
-
-        contextualPrompt = `Previous conversation:\n${historyContext}\n\nCurrent user message: ${message}`;
+      if (faqMatch) {
+        console.log("[LLMService] FAQ match found:", faqMatch.question);
+        return {
+          response: faqMatch.answer,
+          source: "faq",
+          faqId: faqMatch.id,
+          faqQuestion: faqMatch.question,
+          confidence: "high"
+        };
       }
 
-      const result = await this.client.responses.create({
-        model: "gemini-1.5-pro",
-        input: contextualPrompt
+      console.log("[LLMService] No FAQ match, using LLM");
+
+      // Step 2: Build messages array for Ollama chat format
+      const messages = [];
+
+      // Add system prompt with FAQ context
+      const allFAQs = faqService.getAllFAQs();
+      const faqContext = allFAQs.map(faq => `Q: ${faq.question}\nA: ${faq.answer}`).join('\n\n');
+
+      messages.push({
+        role: 'system',
+        content: `You are a helpful customer support assistant. Here are the frequently asked questions for reference:\n\n${faqContext}\n\nIf the user's question is related to these FAQs, provide relevant information. If you cannot answer confidently, say "I'm not sure about that. Let me connect you with a human agent who can help."`
       });
 
+      // Add conversation history
+      if (conversationHistory.length > 0) {
+        conversationHistory.forEach(msg => {
+          messages.push({
+            role: msg.role,
+            content: msg.content
+          });
+        });
+      }
+
+      // Add current user message
+      messages.push({
+        role: 'user',
+        content: message
+      });
+
+      const response = await this.client.chat({
+        model: this.model,
+        messages: messages,
+        stream: false
+      });
+
+      const responseText = response.message.content;
+
+      // Check if LLM suggests escalation
+      const needsEscalation = this.detectEscalationNeed(responseText);
+
       return {
-        response: result.output_text,
-        source: "gemini"
+        response: responseText,
+        source: "ollama",
+        confidence: needsEscalation ? "low" : "medium",
+        needsEscalation: needsEscalation
       };
     } catch (err) {
-      console.error("========== GEMINI ERROR ==========");
+      console.error("========== OLLAMA ERROR ==========");
       console.error(err);
       console.error("err.message:", err?.message);
       console.error("=================================");
 
       return {
-        response: "Gemini failed",
-        source: "error"
+        response: "I'm having trouble processing your request. Let me connect you with a human agent.",
+        source: "error",
+        needsEscalation: true,
+        confidence: "low"
       };
     }
+  }
+
+  detectEscalationNeed(responseText) {
+    const escalationKeywords = [
+      "i'm not sure",
+      "i don't know",
+      "i cannot",
+      "human agent",
+      "connect you with",
+      "let me transfer",
+      "i'm unable to"
+    ];
+
+    const responseLower = responseText.toLowerCase();
+    return escalationKeywords.some(keyword => responseLower.includes(keyword));
   }
 }
 

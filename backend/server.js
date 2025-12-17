@@ -23,13 +23,22 @@ app.get('/', (req, res) => {
   res.json({
     message: 'AI Customer Support Bot API',
     version: '1.0.0',
+    features: [
+      'FAQ-based response matching',
+      'LLM-powered contextual responses',
+      'Redis-based conversation history',
+      'Automatic escalation detection',
+      'Session management'
+    ],
     endpoints: {
-      'POST /api/chat': 'Send a message and get AI response',
-      'GET /api/session/:sessionId': 'Get session details',
+      'POST /api/session/new': 'Create a new session',
+      'POST /api/chat': 'Send a message and get AI response (requires sessionId)',
+      'GET /api/session/:sessionId': 'Get session details with conversation history',
       'DELETE /api/session/:sessionId': 'End a session',
-      'GET /api/faqs': 'Get all FAQs',
+      'POST /api/session/:sessionId/escalate': 'Manually escalate a session',
       'GET /api/sessions': 'Get all active sessions',
-      'POST /api/session/new': 'Create a new session'
+      'GET /api/faqs': 'Get all FAQs (optional ?category filter)',
+      'GET /api/health': 'Health check endpoint'
     }
   });
 });
@@ -77,11 +86,27 @@ app.post("/api/chat", async (req, res) => {
     // Save assistant response to Redis
     await sessionManager.addMessage(sessionId, 'assistant', result.response);
 
+    // Check for auto-escalation
+    let escalated = false;
+    if (result.needsEscalation && !sessionManager.isEscalated(sessionId)) {
+      const escalationReason = result.confidence === 'low'
+        ? 'Bot unable to answer query confidently'
+        : 'User query requires human assistance';
+
+      sessionManager.escalateSession(sessionId, escalationReason);
+      escalated = true;
+      console.log(`[AUTO-ESCALATION] Session ${sessionId} escalated: ${escalationReason}`);
+    }
+
     res.json({
       success: true,
       response: result.response,
       source: result.source,
-      sessionId: sessionId
+      sessionId: sessionId,
+      escalated: escalated,
+      confidence: result.confidence,
+      faqMatched: result.source === 'faq',
+      faqId: result.faqId || null
     });
   } catch (error) {
     console.error('Error in chat endpoint:', error);
@@ -146,6 +171,58 @@ app.delete('/api/session/:sessionId', async (req, res) => {
         error: 'Session not found'
       });
     }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Escalate session manually
+app.post('/api/session/:sessionId/escalate', (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { reason } = req.body;
+
+    const session = sessionManager.getSession(sessionId);
+
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: 'Session not found'
+      });
+    }
+
+    if (session.escalated) {
+      return res.json({
+        success: true,
+        message: 'Session already escalated',
+        alreadyEscalated: true,
+        session: {
+          id: session.id,
+          escalated: session.escalated,
+          escalationReason: session.escalationReason,
+          escalationTime: session.escalationTime
+        }
+      });
+    }
+
+    const escalationReason = reason || 'User requested human assistance';
+    sessionManager.escalateSession(sessionId, escalationReason);
+
+    console.log(`[MANUAL ESCALATION] Session ${sessionId} escalated: ${escalationReason}`);
+
+    res.json({
+      success: true,
+      message: 'Session escalated successfully',
+      session: {
+        id: sessionId,
+        escalated: true,
+        escalationReason: escalationReason,
+        escalationTime: new Date()
+      }
+    });
   } catch (error) {
     res.status(500).json({
       success: false,
