@@ -1,14 +1,15 @@
-// In-memory session storage
+const redisClient = require('./redisClient');
+
+// Hybrid session storage - Redis for conversation history, in-memory for session metadata
 class SessionManager {
   constructor() {
-    this.sessions = new Map();
+    this.sessions = new Map(); // For session metadata
   }
 
   // Create a new session
   createSession(sessionId) {
     const session = {
       id: sessionId,
-      conversationHistory: [],
       createdAt: new Date(),
       lastActivity: new Date(),
       escalated: false,
@@ -33,24 +34,19 @@ class SessionManager {
     return session;
   }
 
-  // Add message to conversation history
-  addMessage(sessionId, role, content) {
+  // Add message to conversation history (now stored in Redis)
+  async addMessage(sessionId, role, content) {
     const session = this.getOrCreateSession(sessionId);
-    session.conversationHistory.push({
-      role,
-      content,
-      timestamp: new Date()
-    });
+    await redisClient.addMessage(sessionId, role, content);
     return session;
   }
 
-  // Get conversation history
-  getHistory(sessionId, limit = 10) {
-    const session = this.getSession(sessionId);
-    if (!session) return [];
+  // Get conversation history from Redis
+  async getHistory(sessionId, limit = 10) {
+    const history = await redisClient.getConversationHistory(sessionId);
 
     // Return last 'limit' messages for context
-    return session.conversationHistory.slice(-limit);
+    return history.slice(-limit);
   }
 
   // Mark session as escalated
@@ -70,14 +66,28 @@ class SessionManager {
     return session ? session.escalated : false;
   }
 
-  // Delete session
-  deleteSession(sessionId) {
+  // Delete session (both from memory and Redis)
+  async deleteSession(sessionId) {
+    await redisClient.deleteSession(sessionId);
     return this.sessions.delete(sessionId);
   }
 
   // Get all active sessions
-  getActiveSessions() {
-    return Array.from(this.sessions.values());
+  async getActiveSessions() {
+    const sessions = Array.from(this.sessions.values());
+
+    // Enrich with conversation history from Redis
+    const enrichedSessions = await Promise.all(
+      sessions.map(async (session) => {
+        const history = await redisClient.getConversationHistory(session.id);
+        return {
+          ...session,
+          conversationHistory: history
+        };
+      })
+    );
+
+    return enrichedSessions;
   }
 
   // Clean up old sessions (older than 24 hours)
@@ -86,6 +96,7 @@ class SessionManager {
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.lastActivity < oneDayAgo) {
         this.sessions.delete(sessionId);
+        // Redis keys automatically expire after 24 hours
       }
     }
   }

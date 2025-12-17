@@ -54,78 +54,47 @@ app.post('/api/session/new', (req, res) => {
 });
 
 // Main chat endpoint
-app.post('/api/chat', async (req, res) => {
+app.post("/api/chat", async (req, res) => {
+  const { message, sessionId } = req.body;
+
+  if (!sessionId) {
+    return res.status(400).json({
+      success: false,
+      error: 'sessionId is required'
+    });
+  }
+
   try {
-    const { message, sessionId } = req.body;
+    // Get conversation history from Redis (last 10 messages for context)
+    const conversationHistory = await sessionManager.getHistory(sessionId, 10);
 
-    if (!message) {
-      return res.status(400).json({
-        success: false,
-        error: 'Message is required'
-      });
-    }
+    // Save user message to Redis
+    await sessionManager.addMessage(sessionId, 'user', message);
 
-    // Get or create session
-    const currentSessionId = sessionId || generateSessionId();
-    const session = sessionManager.getOrCreateSession(currentSessionId);
-    
-    // Check if session is already escalated
-    if (session.escalated) {
-      return res.json({
-        success: true,
-        response: 'This conversation has been escalated to a human agent. Please wait for an agent to assist you.',
-        sessionId: currentSessionId,
-        escalated: true
-      });
-    }
+    // Generate response with context
+    const result = await llmService.generateResponse(message, conversationHistory);
 
-    // Add user message to history
-    sessionManager.addMessage(currentSessionId, 'user', message);
-
-    // Get conversation history
-    const conversationHistory = sessionManager.getHistory(currentSessionId);
-
-    // Generate AI response
-    const aiResult = await llmService.generateResponse(message, conversationHistory);
-
-    // Add AI response to history
-    sessionManager.addMessage(currentSessionId, 'assistant', aiResult.response);
-
-    // Handle escalation
-    if (aiResult.escalate) {
-      sessionManager.escalateSession(currentSessionId, aiResult.reason || 'user_request');
-
-      return res.json({
-        success: true,
-        response: aiResult.response,
-        sessionId: currentSessionId,
-        escalated: true,
-        escalationReason: aiResult.reason,
-        conversationSummary: llmService.summarizeConversation(conversationHistory)
-      });
-    }
+    // Save assistant response to Redis
+    await sessionManager.addMessage(sessionId, 'assistant', result.response);
 
     res.json({
       success: true,
-      response: aiResult.response,
-      sessionId: currentSessionId,
-      escalated: false,
-      confidence: aiResult.confidence,
-      source: aiResult.source
+      response: result.response,
+      source: result.source,
+      sessionId: sessionId
     });
-
   } catch (error) {
     console.error('Error in chat endpoint:', error);
     res.status(500).json({
       success: false,
-      error: 'An error occurred processing your message',
-      details: error.message
+      error: error.message
     });
   }
 });
 
+
 // Get session details
-app.get('/api/session/:sessionId', (req, res) => {
+app.get('/api/session/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     const session = sessionManager.getSession(sessionId);
@@ -137,6 +106,9 @@ app.get('/api/session/:sessionId', (req, res) => {
       });
     }
 
+    // Get conversation history from Redis
+    const conversationHistory = await sessionManager.getHistory(sessionId);
+
     res.json({
       success: true,
       session: {
@@ -145,8 +117,8 @@ app.get('/api/session/:sessionId', (req, res) => {
         lastActivity: session.lastActivity,
         escalated: session.escalated,
         escalationReason: session.escalationReason,
-        messageCount: session.conversationHistory.length,
-        conversationHistory: session.conversationHistory
+        messageCount: conversationHistory.length,
+        conversationHistory: conversationHistory
       }
     });
   } catch (error) {
@@ -158,10 +130,10 @@ app.get('/api/session/:sessionId', (req, res) => {
 });
 
 // Delete/end session
-app.delete('/api/session/:sessionId', (req, res) => {
+app.delete('/api/session/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const deleted = sessionManager.deleteSession(sessionId);
+    const deleted = await sessionManager.deleteSession(sessionId);
 
     if (deleted) {
       res.json({
@@ -210,9 +182,9 @@ app.get('/api/faqs', (req, res) => {
 });
 
 // Get all active sessions (for admin/monitoring)
-app.get('/api/sessions', (req, res) => {
+app.get('/api/sessions', async (req, res) => {
   try {
-    const sessions = sessionManager.getActiveSessions();
+    const sessions = await sessionManager.getActiveSessions();
     const sessionsSummary = sessions.map(session => ({
       id: session.id,
       createdAt: session.createdAt,
