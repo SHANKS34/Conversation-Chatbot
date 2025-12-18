@@ -1,50 +1,14 @@
-require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
-const { v4: uuidv4 } = require('crypto');
-const sessionManager = require('./sessionManager');
-const llmService = require('./llmService');
-const faqs = require('./faqs.json');
+const router = express.Router();
+const sessionManager = require('../SessionMangament/sessionManager');
+const llmService = require('../LLM/llmService');
+const faqs = require('../FAQs/faqs.json');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// Helper function to generate session ID
 function generateSessionId() {
   return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    message: 'AI Customer Support Bot API',
-    version: '1.0.0',
-    features: [
-      'FAQ-based response matching',
-      'LLM-powered contextual responses',
-      'Redis-based conversation history',
-      'Automatic escalation detection',
-      'Session management'
-    ],
-    endpoints: {
-      'POST /api/session/new': 'Create a new session',
-      'POST /api/chat': 'Send a message and get AI response (requires sessionId)',
-      'GET /api/session/:sessionId': 'Get session details with conversation history',
-      'DELETE /api/session/:sessionId': 'End a session',
-      'POST /api/session/:sessionId/escalate': 'Manually escalate a session',
-      'GET /api/sessions': 'Get all active sessions',
-      'GET /api/faqs': 'Get all FAQs (optional ?category filter)',
-      'GET /api/health': 'Health check endpoint'
-    }
-  });
-});
-
-// Create new session
-app.post('/api/session/new', (req, res) => {
+router.post('/session/new', (req, res) => {
   try {
     const sessionId = generateSessionId();
     const session = sessionManager.createSession(sessionId);
@@ -62,10 +26,10 @@ app.post('/api/session/new', (req, res) => {
   }
 });
 
-// Main chat endpoint
-app.post("/api/chat", async (req, res) => {
-  const { message, sessionId } = req.body;
 
+router.post("/chat", async (req, res) => {
+  const { message, sessionId } = req.body;
+   
   if (!sessionId) {
     return res.status(400).json({
       success: false,
@@ -74,19 +38,13 @@ app.post("/api/chat", async (req, res) => {
   }
 
   try {
-    // Get conversation history from Redis (last 10 messages for context)
     const conversationHistory = await sessionManager.getHistory(sessionId, 10);
+     await sessionManager.addMessage(sessionId, 'user', message);
 
-    // Save user message to Redis
-    await sessionManager.addMessage(sessionId, 'user', message);
+    const result = await llmService.generateResponse(message, conversationHistory , sessionId);
 
-    // Generate response with context
-    const result = await llmService.generateResponse(message, conversationHistory);
-
-    // Save assistant response to Redis
     await sessionManager.addMessage(sessionId, 'assistant', result.response);
-
-    // Check for auto-escalation
+    
     let escalated = false;
     if (result.needsEscalation && !sessionManager.isEscalated(sessionId)) {
       const escalationReason = result.confidence === 'low'
@@ -118,8 +76,7 @@ app.post("/api/chat", async (req, res) => {
 });
 
 
-// Get session details
-app.get('/api/session/:sessionId', async (req, res) => {
+router.get('/session/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     const session = sessionManager.getSession(sessionId);
@@ -131,7 +88,6 @@ app.get('/api/session/:sessionId', async (req, res) => {
       });
     }
 
-    // Get conversation history from Redis
     const conversationHistory = await sessionManager.getHistory(sessionId);
 
     res.json({
@@ -154,8 +110,7 @@ app.get('/api/session/:sessionId', async (req, res) => {
   }
 });
 
-// Delete/end session
-app.delete('/api/session/:sessionId', async (req, res) => {
+router.delete('/session/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     const deleted = await sessionManager.deleteSession(sessionId);
@@ -179,8 +134,7 @@ app.delete('/api/session/:sessionId', async (req, res) => {
   }
 });
 
-// Escalate session manually
-app.post('/api/session/:sessionId/escalate', (req, res) => {
+router.post('/session/:sessionId/escalate', (req, res) => {
   try {
     const { sessionId } = req.params;
     const { reason } = req.body;
@@ -231,8 +185,7 @@ app.post('/api/session/:sessionId/escalate', (req, res) => {
   }
 });
 
-// Get all FAQs
-app.get('/api/faqs', (req, res) => {
+router.get('/faqs', (req, res) => {
   try {
     const { category } = req.query;
 
@@ -241,7 +194,6 @@ app.get('/api/faqs', (req, res) => {
       filteredFAQs = faqs.filter(faq => faq.category === category);
     }
 
-    // Get unique categories
     const categories = [...new Set(faqs.map(faq => faq.category))];
 
     res.json({
@@ -258,8 +210,7 @@ app.get('/api/faqs', (req, res) => {
   }
 });
 
-// Get all active sessions (for admin/monitoring)
-app.get('/api/sessions', async (req, res) => {
+router.get('/sessions', async (req, res) => {
   try {
     const sessions = await sessionManager.getActiveSessions();
     const sessionsSummary = sessions.map(session => ({
@@ -283,8 +234,8 @@ app.get('/api/sessions', async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
+
+router.get('/health', (req, res) => {
   res.json({
     success: true,
     status: 'healthy',
@@ -293,14 +244,4 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Cleanup old sessions periodically (every hour)
-setInterval(() => {
-  sessionManager.cleanupOldSessions();
-  console.log('Cleaned up old sessions');
-}, 60 * 60 * 1000);
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`AI Customer Support Bot server running on port ${PORT}`);
-  console.log(`API Documentation: http://localhost:${PORT}`);
-});
+module.exports = router;

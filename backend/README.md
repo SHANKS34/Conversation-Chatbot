@@ -30,6 +30,16 @@ This project demonstrates a production-ready customer support bot with:
 - ✅ Error handling and validation
 - ✅ Responsive frontend design
 
+### 🧠 Conversational Logic & Context
+To provide a human-like experience, the bot maintains conversation "state":
+
+1. **Redis as Context Store**: Every message exchange is stored in Redis under a unique `chatId`.
+2. **Sliding Window Context**: For every new prompt, the system retrieves the **last 10 messages** from Redis.
+3. **LLM Memory**: These 10 messages are passed to the Gemini API alongside the new user query. This allows the AI to:
+   - Remember the user's name if mentioned earlier.
+   - Answer follow-up questions (e.g., "Tell me more about that").
+   - Maintain a consistent tone throughout the session.
+
 ## Tech Stack
 
 ### Backend
@@ -38,29 +48,35 @@ This project demonstrates a production-ready customer support bot with:
 - **Axios** - HTTP client for LLM API calls
 - **dotenv** - Environment configuration
 
-### Frontend
-- **HTML5/CSS3** - Structure and styling
-- **Vanilla JavaScript** - Client-side logic
-- **Fetch API** - Backend communication
-
 ### Optional
-- **OpenAI API** or any LLM provider (with fallback to rule-based responses)
+- **Gemini** or any LLM provider (with fallback to rule-based responses)
 
 ## Project Structure
 
 ```
 Chatbot/
-├── server.js              # Main Express server with API endpoints
-├── sessionManager.js      # In-memory session storage and management
-├── llmService.js         # LLM integration and response generation
-├── faqs.json             # FAQ database (12 questions across 6 categories)
-├── package.json          # Project dependencies
-├── .env                  # Environment variables (API keys)
-└── public/               # Frontend files
-    ├── index.html        # Chat interface
-    ├── styles.css        # Styling
-    └── app.js            # Client-side JavaScript
-```
+├── backend/
+│   ├── FAQs/
+│   │   ├── faqs.json          # Database containing 12 questions across 6 categories
+│   │   └── faqService.js      # Logic for searching and retrieving FAQ answers
+│   ├── LLM/
+│   │   └── llmService.js      # Integration with Gemini API and prompt logic
+│   ├── Redis/
+│   │   ├── client.js          # Redis connection setup
+│   │   └── redisClient.js     # Helper methods for session data operations
+│   ├── routes/
+│   │   └── botRouter.js       # Express routes for chat and bot interactions
+│   ├── Server/
+│   │   └── server.js          # Main entry point for the Express server
+│   ├── SessionManager/
+│   │   └── sessionManager.js  # Logic for handling and storing user chat sessions
+│   ├── .env                   # Environment variables (Private)
+│   ├── package.json           # Project dependencies and scripts
+│   └── README.md              # Project documentation
+└── public/                    # Frontend client files
+    ├── index.html             # The chat interface UI
+    ├── styles.css             # Custom CSS for the chat window
+    └── app.js                 # Client-side JavaScript for API communication
 
 ## Installation
 
@@ -76,6 +92,7 @@ Chatbot/
 cd Chatbot
 ```
 
+
 2. **Install dependencies:**
 ```bash
 npm install
@@ -85,9 +102,7 @@ npm install
 Create a `.env` file in the root directory:
 ```env
 PORT=3000
-OPENAI_API_KEY=your_openai_api_key_here
-LLM_API_URL=https://api.openai.com/v1/chat/completions
-LLM_MODEL=gpt-3.5-turbo
+GEMINI_API_KEY=your_ai_api_key_here
 ```
 
 **Note:** If you don't have an LLM API key, the system will automatically fall back to rule-based responses using the FAQ database.
@@ -112,7 +127,7 @@ http://localhost:3000
 
 ### Base URL
 ```
-http://localhost:3000
+http://localhost:3000/
 ```
 
 ### Endpoints
